@@ -33,7 +33,7 @@ async def user_example():
             sleep_after=3,
             browser=os.getenv("TIKTOK_BROWSER", "chromium"),
         )
-        user = api.user("nina.riviu")
+        user = api.user("justbeminnie")
         user_data = await user.info()
         print(json.dumps(user_data))
 
