@@ -1,0 +1,73 @@
+{
+  "extra": {
+    "fatal_item_ids": [],
+    "logid": "202603241511592144708633CA4878EBA3",
+    "now": 1774336319000
+  },
+  "log_pb": {
+    "impr_id": "202603241511592144708633CA4878EBA3"
+  },
+  "shareMeta": {
+    "desc": "@nina.riviu 7461 Followers, 38 Following, 4677 Likes - Watch awesome short videos created by 🍒 Nina.Riviu ✨",
+    "title": "🍒 Nina.Riviu ✨ on TikTok"
+  },
+  "statusCode": 0,
+  "status_code": 0,
+  "status_msg": "",
+  "userInfo": {
+    "stats": {
+      "diggCount": 0,
+      "followerCount": 7461,
+      "followingCount": 38,
+      "friendCount": 2,
+      "heart": 4677,
+      "heartCount": 4677,
+      "videoCount": 119
+    },
+    "statsV2": {
+      "diggCount": "0",
+      "followerCount": "7461",
+      "followingCount": "38",
+      "friendCount": "2",
+      "heart": "4677",
+      "heartCount": "4677",
+      "videoCount": "119"
+    },
+    "user": {
+      "UserStoryStatus": 0,
+      "avatarLarger": "https://p16-sign-sg.tiktokcdn.com/tos-alisg-avt-0068/4385aa0673fb87128187db95f2e9c8d7~tplv-tiktokx-cropcenter:1080:1080.jpeg?dr=14579&refresh_token=c7db44fa&x-expires=1774508400&x-signature=NW7YtbKfpUpGysFQiUBeigF4vLs%3D&t=4d5b0474&ps=13740610&shp=a5d48078&shcp=81f88b70&idc=my2",
+      "avatarMedium": "https://p16-sign-sg.tiktokcdn.com/tos-alisg-avt-0068/4385aa0673fb87128187db95f2e9c8d7~tplv-tiktokx-cropcenter:720:720.jpeg?dr=14579&refresh_token=bdd35243&x-expires=1774508400&x-signature=Hr8pTGyccbUAFPt9AKlukGay%2B34%3D&t=4d5b0474&ps=13740610&shp=a5d48078&shcp=81f88b70&idc=my2",
+      "avatarThumb": "https://p16-sign-sg.tiktokcdn.com/tos-alisg-avt-0068/4385aa0673fb87128187db95f2e9c8d7~tplv-tiktokx-cropcenter:100:100.jpeg?dr=14579&refresh_token=ffbfb504&x-expires=1774508400&x-signature=4FZL0c8m7wAnuS4jnNjYKGdpJPM%3D&t=4d5b0474&ps=13740610&shp=a5d48078&shcp=81f88b70&idc=my2",
+      "canExpPlaylist": true,
+      "commentSetting": 0,
+      "commerceUserInfo": {
+        "category": "Beauty",
+        "categoryButton": false,
+        "commerceUser": true
+      },
+      "downloadSetting": 3,
+      "duetSetting": 0,
+      "followingVisibility": 2,
+      "ftc": false,
+      "id": "7525406886734480391",
+      "isADVirtual": false,
+      "isEmbedBanned": false,
+      "nickNameModifyTime": 1764655075,
+      "nickname": "🍒 Nina.Riviu ✨",
+      "openFavorite": false,
+      "privateAccount": false,
+      "profileEmbedPermission": 1,
+      "profileTab": {
+        "showPlayListTab": false
+      },
+      "relation": 0,
+      "secUid": "MS4wLjABAAAAM0swfoUor3ZCoowUWKSmCythoeO9qo0k77H-Rk-cHIErSUWDubrRHUSrJMcBrfc_",
+      "secret": false,
+      "signature": "🌻Hé lô cả nhà 😚\n\n🙈 Lại là Nina Riviu cả thế giới đâyyy 🌷",
+      "stitchSetting": 0,
+      "ttSeller": false,
+      "uniqueId": "nina.riviu",
+      "verified": false
+    }
+  }
+}
