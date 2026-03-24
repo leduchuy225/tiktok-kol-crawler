@@ -1,0 +1,4 @@
+TikTokApi>=7.0.0
+pandas
+openpyxl
+asyncio
