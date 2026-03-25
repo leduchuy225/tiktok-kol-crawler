@@ -20,9 +20,9 @@ async def get_hashtag_videos():
             browser=os.getenv("TIKTOK_BROWSER", "chromium"),
         )
         tag = api.hashtag(name="funny")
-        async for video in tag.videos(count=2):
+        async for video in tag.videos(count=1):
             print(video)
-            # print(video.as_dict)
+            print(video.as_dict)
 
 
 async def user_example():
@@ -47,4 +47,4 @@ async def user_example():
 
 if __name__ == "__main__":
     # asyncio.run(get_hashtag_videos())
-    asyncio.run(user_example())
+    asyncio.run(get_hashtag_videos())

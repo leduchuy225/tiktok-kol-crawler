@@ -34,6 +34,10 @@ HEADLESS = os.environ.get("HEADLESS", "1") in ["1", "true", "True"]
 BROWSER_LOCALE = os.environ.get("BROWSER_LOCALE", "vi-VN")
 BROWSER_TIMEZONE = os.environ.get("BROWSER_TIMEZONE", "Asia/Ho_Chi_Minh")
 # PROXY_URL = os.environ.get("PROXY_URL", "").strip()
+RUN_MODE = os.environ.get("RUN_MODE", "collect").lower()  # collect | enrich
+
+if RUN_MODE not in {"collect", "enrich"}:
+    raise ValueError("RUN_MODE must be 'collect' or 'enrich'.")
 
 
 def extract_user_data(user_info):
@@ -137,24 +141,33 @@ async def safe_user_info(api, username, retries=5, timeout=30):
             await backoff_sleep(attempt)
 
 
-async def build_user_list(api, beauty_hashtags, users, videos_per_hashtag):
+async def build_user_list(
+    api, beauty_hashtags, users, videos_per_hashtag, exclude_users=None
+):
+    if exclude_users is None:
+        exclude_users = set()
+
     for hashtag_name in beauty_hashtags:
         try:
             print(f"[Hashtag: #{hashtag_name}] Starting to fetch videos...")
             hashtag = api.hashtag(name=hashtag_name)
             found = 0
+            new_found = 0
             video_timeout = 15  # timeout per video fetch
 
             async for video in hashtag.videos(count=videos_per_hashtag):
                 try:
                     # Wrap each video access in timeout to detect hangs
                     if video.author and video.author.username:
-                        users.add(video.author.username)
+                        username = video.author.username
+                        if username not in exclude_users and username not in users:
+                            users.add(username)
+                            new_found += 1
+                            if new_found % 50 == 0:
+                                print(
+                                    f"[Hashtag: #{hashtag_name}] Found {new_found} new users so far..."
+                                )
                         found += 1
-                        if found % 50 == 0:
-                            print(
-                                f"[Hashtag: #{hashtag_name}] Collected {found} users so far..."
-                            )
                     # slow crawl with time
                     await asyncio.sleep(random.uniform(1.5, 4.0))
                     if found >= videos_per_hashtag:
@@ -168,7 +181,9 @@ async def build_user_list(api, beauty_hashtags, users, videos_per_hashtag):
                     print(f"  ⚠ Error processing video: {e}. Continuing...")
                     continue
 
-            print(f"✓ Collected {found} users from #{hashtag_name}")
+            print(
+                f"✓ Found {new_found} new users from #{hashtag_name} (processed {found} videos)"
+            )
 
         except asyncio.TimeoutError:
             print(
@@ -193,26 +208,139 @@ def save_progress(kol_data, failed_users):
     # remove duplicate usernames in case there are repeats from multiple runs
     if "username" in df.columns:
         df = df.drop_duplicates(subset=["username"], keep="first")
-    df.to_excel(OUTPUT_FILE, index=False)
+
+    # Save with random colors for username column
+    with pd.ExcelWriter(
+        OUTPUT_FILE, engine="xlsxwriter", options={"nan_inf_to_errors": True}
+    ) as writer:
+        df.to_excel(writer, sheet_name="Sheet1", index=False)
+
+        workbook = writer.book
+        worksheet = writer.sheets["Sheet1"]
+
+        # Define some random colors
+        colors = [
+            "#FF6B6B",
+            "#4ECDC4",
+            "#45B7D1",
+            "#96CEB4",
+            "#FFEAA7",
+            "#DDA0DD",
+            "#98D8C8",
+            "#F7DC6F",
+            "#BB8FCE",
+            "#85C1E9",
+        ]
+
+        # Format for username column (column A)
+        for row_num in range(1, len(df) + 1):  # Start from 1 to skip header
+            color = random.choice(colors)
+            cell_format = workbook.add_format({"font_color": color})
+            worksheet.write(
+                f"A{row_num + 1}", df.iloc[row_num - 1]["username"], cell_format
+            )
+
     save_json(FAILED_FILE, failed_users)
+
+
+def save_user_list(usernames):
+    new_df = pd.DataFrame([{"username": u} for u in sorted(usernames)])
+    new_df.drop_duplicates(subset=["username"], keep="first", inplace=True)
+
+    if OUTPUT_FILE.is_file():
+        try:
+            existing_df = pd.read_excel(OUTPUT_FILE)
+        except Exception as e:
+            print(
+                f"⚠ Warning: could not read existing {OUTPUT_FILE}: {e}. Rewriting from scratch."
+            )
+            existing_df = pd.DataFrame()
+    else:
+        existing_df = pd.DataFrame()
+
+    if "username" in existing_df.columns and not existing_df.empty:
+        merged = pd.concat([existing_df, new_df], ignore_index=True)
+        merged.drop_duplicates(subset=["username"], keep="first", inplace=True)
+    else:
+        merged = new_df
+
+    # Save with random colors for username column
+    with pd.ExcelWriter(
+        OUTPUT_FILE, engine="xlsxwriter", options={"nan_inf_to_errors": True}
+    ) as writer:
+        merged.to_excel(writer, sheet_name="Sheet1", index=False)
+
+        workbook = writer.book
+        worksheet = writer.sheets["Sheet1"]
+
+        # Define some random colors
+        colors = [
+            "#FF6B6B",
+            "#4ECDC4",
+            "#45B7D1",
+            "#96CEB4",
+            "#FFEAA7",
+            "#DDA0DD",
+            "#98D8C8",
+            "#F7DC6F",
+            "#BB8FCE",
+            "#85C1E9",
+        ]
+
+        # Format for username column (column A)
+        for row_num in range(1, len(merged) + 1):  # Start from 1 to skip header
+            color = random.choice(colors)
+            cell_format = workbook.add_format({"font_color": color})
+            worksheet.write(
+                f"A{row_num + 1}", merged.iloc[row_num - 1]["username"], cell_format
+            )
+
+
+async def enrich_users_from_excel(api, existing_df):
+    kol_data = []
+    failed_users = set()
+
+    usernames = [str(u) for u in existing_df.get("username", []) if pd.notna(u)]
+    print(f"Enriching {len(usernames)} users from {OUTPUT_FILE}")
+
+    for i, username in enumerate(usernames, start=1):
+        try:
+            user_info = await safe_user_info(api, username)
+            data, user_id = extract_user_data(user_info)
+            kol_data.append(data)
+            print(f"Enriched {i}/{len(usernames)}: {username}")
+            save_progress(kol_data, list(failed_users))
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+        except BotDetectedError as e:
+            print(f"Bot detected while enriching {username}: {e}. Stopping.")
+            raise SystemExit("Bot detection triggered during enrich. Exiting.")
+        except Exception as e:
+            print(f"Failed to enrich {username}: {e}")
+            failed_users.add(username)
+            save_progress(kol_data, list(failed_users))
+            await asyncio.sleep(1)
+
+    return kol_data, failed_users
 
 
 async def crawl_beauty_kols():
     all_hashtags = [
         # "beautyvietnam",
         # "beautyvn",
-        "skincarevn",
-        "kemtrangdiem",
-        "lamdep",
-        "sieudep",
-        "skincarevietnam",
-        "makeupvietnam",
-        "cosmeticsvietnam",
-        "lamdepvietnam",
+        # "skincarevn",
+        # "kemtrangdiem",
+        # "lamdep",
+        # "HợptáccùngUnilever",
+        "Hợptáccùng3ce"
+        # "sieudep",
+        # "skincarevietnam",
+        # "makeupvietnam",
+        # "cosmeticsvietnam",
+        # "lamdepvietnam",
         # "sieudepvietnam",
-        "makeupvn",
-        "cosmeticsvn",
-        "vnbeauty",
+        # "makeupvn",
+        # "cosmeticsvn",
+        # "vnbeauty",
         # "beauty",
         # "makeup",
         # "skincare",
@@ -221,7 +349,7 @@ async def crawl_beauty_kols():
     ]
     # Combine global beauty focus + Vietnam tags
     # all_hashtags = beauty_hashtags + vietnam_hashtags
-    videos_per_hashtag = 100
+    videos_per_hashtag = 200
 
     # vietnam_only = os.environ.get("VIETNAM_ONLY", "1") in ["1", "true", "True"]
 
@@ -239,20 +367,21 @@ async def crawl_beauty_kols():
     kol_data = []
     processed_users = set(checkpoint.get("processed_users", []))
     processed_user_ids = set(checkpoint.get("processed_user_ids", []))
-    pending = set(checkpoint.get("pending_users", []))
+    # pending = set(checkpoint.get("pending_users", []))
     failed_users = set(checkpoint.get("failed_users", []))
     completed_hashtags = set(checkpoint.get("completed_hashtags", []))
     # collected_users = set()
 
     if OUTPUT_FILE.is_file():
         old_df = pd.read_excel(OUTPUT_FILE)
-        for u in old_df.get("username", []):
-            processed_users.add(str(u))
-            if u in failed_users:
-                failed_users.remove(u)
-        for uid in old_df.get("user_id", []):
-            if pd.notna(uid):
-                processed_user_ids.add(str(uid))
+        if "username" in old_df.columns:
+            for u in old_df["username"]:
+                if pd.notna(u):
+                    processed_users.add(str(u))
+        if "user_id" in old_df.columns:
+            for uid in old_df["user_id"]:
+                if pd.notna(uid):
+                    processed_user_ids.add(str(uid))
         kol_data = old_df.to_dict("records")
 
     async with TikTokApi() as api:
@@ -290,98 +419,50 @@ async def crawl_beauty_kols():
             await test_session(api)
             print("✓ Session is active and responding.")
 
-            for hashtag in all_hashtags:
-                if hashtag in completed_hashtags:
-                    print(f"Skipping already completed hashtag: #{hashtag}")
-                    continue
-
-                print(f"Processing hashtag: #{hashtag}")
-                users = set()
-                await build_user_list(api, [hashtag], users, videos_per_hashtag)
-                # collected_users.update(users)
-                pending = users - processed_users
-
-                if not pending:
-                    print(f"No new users from #{hashtag}. Marking as completed.")
-                    completed_hashtags.add(hashtag)
-                    continue
-
-                pending = list(pending)
-                # If more users found than MAX_USERS_PER_RUN, process all; else process all (no limit)
-                total = len(pending)
-                print(
-                    f"Starting processing {total} users from #{hashtag} (found {len(pending)} users). Pending users: {pending}"
-                )
-
-                for i, username in enumerate(pending, start=1):
-                    if username in processed_users:
+            if RUN_MODE == "collect":
+                all_users = set(processed_users)
+                for hashtag in all_hashtags:
+                    if hashtag in completed_hashtags:
+                        print(f"Skipping already completed hashtag: #{hashtag}")
                         continue
 
-                    try:
-                        user_info = await safe_user_info(api, username)
-                        data, user_id = extract_user_data(user_info)
-
-                        # user_id = str(user_info.get("id", ""))
-                        if user_id and user_id in processed_user_ids:
-                            print(
-                                f"Skipped {username} ({user_id}): user_id already processed"
-                            )
-                            processed_users.add(username)
-                            continue
-
-                        kol_data.append(data)
-                        processed_users.add(username)
-                        if user_id:
-                            processed_user_ids.add(user_id)
-
-                        print(
-                            f"Processed {i}/{total} ({username}) from #{hashtag}. Processed total: {len(processed_users)}"
-                        )
-
-                        # Save progress immediately after each successful KOL
-                        save_progress(kol_data, list(failed_users))
-
-                        await asyncio.sleep(random.uniform(3.0, 7.0))
-
-                    except BotDetectedError as e:
-                        print(f"Bot detected: {e}. Stopping the crawler.")
-                        raise SystemExit("Bot detection triggered. Exiting.")
-                    except Exception as e:
-                        print(f"Failed {username} after retries: {e}")
-                        failed_users.add(username)
-
-                # Mark hashtag as completed after processing its users
-                completed_hashtags.add(hashtag)
-                print(f"Completed processing hashtag: #{hashtag}")
-
-                # Save checkpoint after each hashtag
-                new_checkpoint = {
-                    "processed_users": list(processed_users),
-                    "processed_user_ids": list(processed_user_ids),
-                    "pending_users": [],
-                    "failed_users": list(failed_users),
-                    "completed_hashtags": list(completed_hashtags),
-                }
-                with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
-                    json.dump(new_checkpoint, f, ensure_ascii=False, indent=2)
-
-                # Check if total processed users exceed MAX_USERS_PER_RUN, stop if so
-                if len(processed_users) >= MAX_USERS_PER_RUN:
-                    print(
-                        f"Reached max users per run ({MAX_USERS_PER_RUN}). Stopping crawl."
+                    print(f"Collecting users from hashtag: #{hashtag}")
+                    users = set()
+                    await build_user_list(
+                        api,
+                        [hashtag],
+                        users,
+                        videos_per_hashtag,
+                        exclude_users=all_users,
                     )
-                    break
+                    new_users = users - all_users
+                    print(f"Found {len(new_users)} new users for #{hashtag}")
+                    all_users.update(new_users)
+                    completed_hashtags.add(hashtag)
 
-                # Save collected users after all hashtags
-                # with open(COLLECTED_USERS_FILE, "w", encoding="utf-8") as f:
-                #     json.dump(list(collected_users), f, ensure_ascii=False, indent=2)
-                # print(
-                #     f"Saved {len(collected_users)} collected users to {COLLECTED_USERS_FILE}"
-                # )
+                    if len(all_users) >= MAX_USERS_PER_RUN:
+                        print(
+                            f"Reached MAX_USERS_PER_RUN={MAX_USERS_PER_RUN} while collecting. Stopping."
+                        )
+                        break
 
-            print(
-                f"Crawl complete. Saved {len(kol_data)} KOL profiles. Failed users: {len(failed_users)}"
-            )
+                save_user_list(all_users)
+                print(f"Saved {len(all_users)} users to {OUTPUT_FILE} (collect mode)")
+                return
+
+            if RUN_MODE == "enrich":
+                if not OUTPUT_FILE.is_file():
+                    raise FileNotFoundError(f"{OUTPUT_FILE} not found for enrich mode")
+
+                existing_df = pd.read_excel(OUTPUT_FILE)
+                if existing_df.empty:
+                    raise ValueError(f"{OUTPUT_FILE} is empty, cannot enrich")
+
+                kol_data, failed_users = await enrich_users_from_excel(api, existing_df)
+                print(
+                    f"Enrich complete. Total profiles: {len(kol_data)} Failed: {len(failed_users)}"
+                )
+                return
 
         finally:
             # Ensure heartbeat is always cancelled to prevent resource leaks
