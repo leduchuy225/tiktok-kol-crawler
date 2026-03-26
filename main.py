@@ -147,6 +147,8 @@ async def build_user_list(
     if exclude_users is None:
         exclude_users = set()
 
+    collected_user_data = []  # Store basic user data from hashtag API
+
     for hashtag_name in beauty_hashtags:
         try:
             print(f"[Hashtag: #{hashtag_name}] Starting to fetch videos...")
@@ -162,6 +164,14 @@ async def build_user_list(
                         username = video.author.username
                         if username not in exclude_users and username not in users:
                             users.add(username)
+                            # Try to collect basic info available from hashtag API
+                            user_basic = {
+                                "hashtag": hashtag_name,
+                                "username": username,
+                                "nickname": getattr(video.author, "nickname", "")
+                                or getattr(video.author, "display_name", ""),
+                            }
+                            collected_user_data.append(user_basic)
                             new_found += 1
                             if new_found % 50 == 0:
                                 print(
@@ -200,7 +210,7 @@ async def build_user_list(
             )
             await asyncio.sleep(10)
 
-    return users
+    return users, collected_user_data
 
 
 def save_progress(kol_data, failed_users):
@@ -209,43 +219,24 @@ def save_progress(kol_data, failed_users):
     if "username" in df.columns:
         df = df.drop_duplicates(subset=["username"], keep="first")
 
-    # Save with random colors for username column
-    with pd.ExcelWriter(
-        OUTPUT_FILE, engine="xlsxwriter", options={"nan_inf_to_errors": True}
-    ) as writer:
-        df.to_excel(writer, sheet_name="Sheet1", index=False)
-
-        workbook = writer.book
-        worksheet = writer.sheets["Sheet1"]
-
-        # Define some random colors
-        colors = [
-            "#FF6B6B",
-            "#4ECDC4",
-            "#45B7D1",
-            "#96CEB4",
-            "#FFEAA7",
-            "#DDA0DD",
-            "#98D8C8",
-            "#F7DC6F",
-            "#BB8FCE",
-            "#85C1E9",
+    if "hashtag" in df.columns:
+        ordered_columns = ["hashtag", "username"] + [
+            column for column in df.columns if column not in {"hashtag", "username"}
         ]
+        df = df[ordered_columns]
 
-        # Format for username column (column A)
-        for row_num in range(1, len(df) + 1):  # Start from 1 to skip header
-            color = random.choice(colors)
-            cell_format = workbook.add_format({"font_color": color})
-            worksheet.write(
-                f"A{row_num + 1}", df.iloc[row_num - 1]["username"], cell_format
-            )
+    df.to_excel(OUTPUT_FILE, index=False)
 
     save_json(FAILED_FILE, failed_users)
 
 
-def save_user_list(usernames):
-    new_df = pd.DataFrame([{"username": u} for u in sorted(usernames)])
-    new_df.drop_duplicates(subset=["username"], keep="first", inplace=True)
+def save_user_list(user_rows):
+    new_df = pd.DataFrame(user_rows)
+    if new_df.empty:
+        new_df = pd.DataFrame(columns=["hashtag", "username", "nickname"])
+
+    if "username" in new_df.columns:
+        new_df.drop_duplicates(subset=["username"], keep="first", inplace=True)
 
     if OUTPUT_FILE.is_file():
         try:
@@ -264,36 +255,13 @@ def save_user_list(usernames):
     else:
         merged = new_df
 
-    # Save with random colors for username column
-    with pd.ExcelWriter(
-        OUTPUT_FILE, engine="xlsxwriter", options={"nan_inf_to_errors": True}
-    ) as writer:
-        merged.to_excel(writer, sheet_name="Sheet1", index=False)
-
-        workbook = writer.book
-        worksheet = writer.sheets["Sheet1"]
-
-        # Define some random colors
-        colors = [
-            "#FF6B6B",
-            "#4ECDC4",
-            "#45B7D1",
-            "#96CEB4",
-            "#FFEAA7",
-            "#DDA0DD",
-            "#98D8C8",
-            "#F7DC6F",
-            "#BB8FCE",
-            "#85C1E9",
+    if "hashtag" in merged.columns:
+        ordered_columns = ["hashtag", "username"] + [
+            column for column in merged.columns if column not in {"hashtag", "username"}
         ]
+        merged = merged[ordered_columns]
 
-        # Format for username column (column A)
-        for row_num in range(1, len(merged) + 1):  # Start from 1 to skip header
-            color = random.choice(colors)
-            cell_format = workbook.add_format({"font_color": color})
-            worksheet.write(
-                f"A{row_num + 1}", merged.iloc[row_num - 1]["username"], cell_format
-            )
+    merged.to_excel(OUTPUT_FILE, index=False)
 
 
 async def enrich_users_from_excel(api, existing_df):
@@ -331,9 +299,9 @@ async def crawl_beauty_kols():
         # "kemtrangdiem",
         # "lamdep",
         # "HợptáccùngUnilever",
-        "Hợptáccùng3ce"
+        # "Hợptáccùng3ce"
         # "sieudep",
-        # "skincarevietnam",
+        "skincarevietnam",
         # "makeupvietnam",
         # "cosmeticsvietnam",
         # "lamdepvietnam",
@@ -346,10 +314,12 @@ async def crawl_beauty_kols():
         # "skincare",
         # "cosmetics",
         # "beautytips",
+        # "hợptáccùngLorealParis",
+        # "ObagimedicalVietnam",
     ]
     # Combine global beauty focus + Vietnam tags
     # all_hashtags = beauty_hashtags + vietnam_hashtags
-    videos_per_hashtag = 200
+    videos_per_hashtag = 20
 
     # vietnam_only = os.environ.get("VIETNAM_ONLY", "1") in ["1", "true", "True"]
 
@@ -421,6 +391,13 @@ async def crawl_beauty_kols():
 
             if RUN_MODE == "collect":
                 all_users = set(processed_users)
+                collected_rows = []
+
+                if OUTPUT_FILE.is_file():
+                    existing_collect_df = pd.read_excel(OUTPUT_FILE)
+                    if not existing_collect_df.empty:
+                        collected_rows = existing_collect_df.to_dict("records")
+
                 for hashtag in all_hashtags:
                     if hashtag in completed_hashtags:
                         print(f"Skipping already completed hashtag: #{hashtag}")
@@ -428,7 +405,7 @@ async def crawl_beauty_kols():
 
                     print(f"Collecting users from hashtag: #{hashtag}")
                     users = set()
-                    await build_user_list(
+                    users, user_data = await build_user_list(
                         api,
                         [hashtag],
                         users,
@@ -436,6 +413,7 @@ async def crawl_beauty_kols():
                         exclude_users=all_users,
                     )
                     new_users = users - all_users
+                    collected_rows.extend(user_data)
                     print(f"Found {len(new_users)} new users for #{hashtag}")
                     all_users.update(new_users)
                     completed_hashtags.add(hashtag)
@@ -446,7 +424,7 @@ async def crawl_beauty_kols():
                         )
                         break
 
-                save_user_list(all_users)
+                save_user_list(collected_rows)
                 print(f"Saved {len(all_users)} users to {OUTPUT_FILE} (collect mode)")
                 return
 
