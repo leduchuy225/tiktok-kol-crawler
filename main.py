@@ -548,15 +548,27 @@ async def crawl_beauty_kols():
             if RUN_MODE == "collect":
                 all_users = set(processed_users)
                 collected_rows = []
+                existing_hashtags = set()
 
                 if OUTPUT_FILE.is_file():
                     existing_collect_df = pd.read_excel(OUTPUT_FILE)
                     if not existing_collect_df.empty:
                         collected_rows = existing_collect_df.to_dict("records")
+                        if "hashtag" in existing_collect_df.columns:
+                            existing_hashtags = {
+                                str(value).strip()
+                                for value in existing_collect_df["hashtag"]
+                                if pd.notna(value) and str(value).strip()
+                            }
 
                 for hashtag in all_hashtags:
                     if hashtag in completed_hashtags:
                         print(f"Skipping already completed hashtag: #{hashtag}")
+                        continue
+
+                    if hashtag in existing_hashtags:
+                        print(f"Skipping hashtag already in Excel: #{hashtag}")
+                        completed_hashtags.add(hashtag)
                         continue
 
                     print(f"Collecting users from hashtag: #{hashtag}")
@@ -573,6 +585,7 @@ async def crawl_beauty_kols():
                     print(f"Found {len(new_users)} new users for #{hashtag}")
                     all_users.update(new_users)
                     completed_hashtags.add(hashtag)
+                    existing_hashtags.add(hashtag)
 
                     if len(all_users) >= MAX_USERS_PER_RUN:
                         print(
