@@ -626,6 +626,12 @@ async def crawl_beauty_kols():
                     completed_hashtags.add(hashtag)
                     existing_hashtags.add(hashtag)
 
+                    # Persist after each hashtag so Ctrl+C does not lose collected rows
+                    save_user_list(collected_rows)
+                    print(
+                        f"Saved progress after #{hashtag}: {len(all_users)} total users"
+                    )
+
                     if len(all_users) >= MAX_USERS_PER_RUN:
                         print(
                             f"Reached MAX_USERS_PER_RUN={MAX_USERS_PER_RUN} while collecting. Stopping."
