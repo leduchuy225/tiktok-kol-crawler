@@ -1,10 +1,13 @@
 import asyncio
+import argparse
 import json
 import os
 import random
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 from TikTokApi import TikTokApi
 import pandas as pd
 
@@ -24,20 +27,61 @@ FAILED_FILE = Path("failed_users.json")
 # Set your ms_token from TikTok cookies
 # To get ms_token: Log in to TikTok, open dev tools, go to Application > Cookies > tiktok.com > msToken
 ms_token = os.environ.get("ms_token", None)
-if not ms_token:
-    raise ValueError(
-        "Please set the ms_token environment variable. Get it from your TikTok cookies."
-    )
 
 MAX_USERS_PER_RUN = int(os.environ.get("MAX_USERS_PER_RUN", "3"))
 HEADLESS = os.environ.get("HEADLESS", "1") in ["1", "true", "True"]
 BROWSER_LOCALE = os.environ.get("BROWSER_LOCALE", "vi-VN")
 BROWSER_TIMEZONE = os.environ.get("BROWSER_TIMEZONE", "Asia/Ho_Chi_Minh")
 # PROXY_URL = os.environ.get("PROXY_URL", "").strip()
-RUN_MODE = os.environ.get("RUN_MODE", "collect").lower()  # collect | enrich
+
+all_hashtags = [
+    # "beautyvietnam",
+    # "beautyvn",
+    # "skincarevn",
+    # "kemtrangdiem",
+    # "lamdep",
+    # "HợptáccùngUnilever",
+    # "Hợptáccùng3ce"
+    # "sieudep",
+    "skincarevietnam",
+    "makeupvietnam",
+    "cosmeticsvietnam",
+    "lamdepvietnam",
+    # "sieudepvietnam",
+    # "makeupvn",
+    # "cosmeticsvn",
+    # "vnbeauty",
+    # "beauty",
+    # "makeup",
+    # "skincare",
+    # "cosmetics",
+    # "beautytips",
+    # "hợptáccùngLorealParis",
+    # "ObagimedicalVietnam",
+]
+
+videos_per_hashtag = 200
+
+
+def get_cli_mode():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--mode", "-mode", "-m", dest="mode", type=str)
+    args, _ = parser.parse_known_args()
+    return args.mode
+
+
+cli_mode = get_cli_mode()
+RUN_MODE = (
+    cli_mode or os.environ.get("RUN_MODE", "collect")
+).lower()  # collect | enrich
 
 if RUN_MODE not in {"collect", "enrich"}:
     raise ValueError("RUN_MODE must be 'collect' or 'enrich'.")
+
+if RUN_MODE == "collect" and not ms_token:
+    raise ValueError(
+        "Please set the ms_token environment variable. Get it from your TikTok cookies."
+    )
 
 
 def extract_user_data(user_info):
@@ -74,6 +118,30 @@ def load_json(path):
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def is_update_enabled(raw_value):
+    """Normalize Excel/text flags for update column."""
+    if pd.isna(raw_value):
+        return True
+
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    if isinstance(raw_value, (int, float)):
+        return int(raw_value) == 1
+
+    value = str(raw_value).strip().lower()
+    if value in {"1", "1.0", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "0.0", "false", "no", "n", "off"}:
+        return False
+
+    # Fallback: try numeric conversion for strings like "1.00"
+    try:
+        return int(float(value)) == 1
+    except (TypeError, ValueError):
+        return False
 
 
 async def test_session(api):
@@ -124,6 +192,59 @@ async def safe_user_info(api, username, retries=5, timeout=30):
             if attempt == retries - 1:
                 raise
             await backoff_sleep(attempt)
+
+
+async def fetch_user_from_web(client, username, hashtag="", retries=3):
+    url = f"https://www.tiktok.com/@{username}"
+    for attempt in range(retries):
+        try:
+            await asyncio.sleep(random.uniform(1.2, 2.8))
+            response = await client.get(url, timeout=20.0)
+
+            if response.status_code == 429:
+                print(f"[{username}] got 429 rate limit, retrying...")
+                await asyncio.sleep(5 + attempt * 2)
+                continue
+
+            if response.status_code != 200:
+                raise Exception(f"HTTP {response.status_code}")
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            script = soup.find("script", id="__UNIVERSAL_DATA_FOR_REHYDRATION__")
+            if not script or not script.string:
+                raise Exception("missing rehydration data")
+
+            data = json.loads(script.string)
+            user_info = (
+                data.get("__DEFAULT_SCOPE__", {})
+                .get("webapp.user-detail", {})
+                .get("userInfo", {})
+            )
+            user = user_info.get("user", {})
+            stats = user_info.get("stats", {})
+            if not user:
+                raise Exception("user payload missing")
+
+            return {
+                "hashtag": hashtag,
+                "username": username,
+                "display_name": user.get("uniqueId", username),
+                "nickname": user.get("nickname", ""),
+                "followers": stats.get("followerCount", 0),
+                "_ok": True,
+            }
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"[{username}] web enrich failed: {e}")
+                return {
+                    "hashtag": hashtag,
+                    "username": username,
+                    "display_name": username,
+                    "nickname": "",
+                    "followers": 0,
+                    "_ok": False,
+                }
+            await asyncio.sleep(2 + attempt)
         except Exception as e:
             bot_msg = (
                 " (possible bot detect; try HEADLESS=0, browser=webkit, or PROXY_URL)"
@@ -168,6 +289,7 @@ async def build_user_list(
                             user_basic = {
                                 "hashtag": hashtag_name,
                                 "username": username,
+                                "update": 1,
                                 "nickname": getattr(video.author, "nickname", "")
                                 or getattr(video.author, "display_name", ""),
                             }
@@ -219,9 +341,19 @@ def save_progress(kol_data, failed_users):
     if "username" in df.columns:
         df = df.drop_duplicates(subset=["username"], keep="first")
 
+    if "update" not in df.columns:
+        df["update"] = 1
+
     if "hashtag" in df.columns:
-        ordered_columns = ["hashtag", "username"] + [
-            column for column in df.columns if column not in {"hashtag", "username"}
+        ordered_columns = ["hashtag", "username", "update"] + [
+            column
+            for column in df.columns
+            if column not in {"hashtag", "username", "update"}
+        ]
+        df = df[ordered_columns]
+    elif "username" in df.columns:
+        ordered_columns = ["username", "update"] + [
+            column for column in df.columns if column not in {"username", "update"}
         ]
         df = df[ordered_columns]
 
@@ -233,7 +365,10 @@ def save_progress(kol_data, failed_users):
 def save_user_list(user_rows):
     new_df = pd.DataFrame(user_rows)
     if new_df.empty:
-        new_df = pd.DataFrame(columns=["hashtag", "username", "nickname"])
+        new_df = pd.DataFrame(columns=["hashtag", "username", "update", "nickname"])
+
+    if "update" not in new_df.columns:
+        new_df["update"] = 1
 
     if "username" in new_df.columns:
         new_df.drop_duplicates(subset=["username"], keep="first", inplace=True)
@@ -255,74 +390,81 @@ def save_user_list(user_rows):
     else:
         merged = new_df
 
+    if "update" not in merged.columns:
+        merged["update"] = 1
+    merged["update"] = merged["update"].fillna(1)
+
     if "hashtag" in merged.columns:
-        ordered_columns = ["hashtag", "username"] + [
-            column for column in merged.columns if column not in {"hashtag", "username"}
+        ordered_columns = ["hashtag", "username", "update"] + [
+            column
+            for column in merged.columns
+            if column not in {"hashtag", "username", "update"}
+        ]
+        merged = merged[ordered_columns]
+    elif "username" in merged.columns:
+        ordered_columns = ["username", "update"] + [
+            column for column in merged.columns if column not in {"username", "update"}
         ]
         merged = merged[ordered_columns]
 
     merged.to_excel(OUTPUT_FILE, index=False)
 
 
-async def enrich_users_from_excel(api, existing_df):
+async def enrich_users_from_excel(existing_df):
     kol_data = []
     failed_users = set()
 
-    usernames = [str(u) for u in existing_df.get("username", []) if pd.notna(u)]
-    print(f"Enriching {len(usernames)} users from {OUTPUT_FILE}")
+    source_rows = existing_df.to_dict("records")
+    print(f"Enriching {len(source_rows)} users from {OUTPUT_FILE} using web scraping")
 
-    for i, username in enumerate(usernames, start=1):
-        try:
-            user_info = await safe_user_info(api, username)
-            data, user_id = extract_user_data(user_info)
-            kol_data.append(data)
-            print(f"Enriched {i}/{len(usernames)}: {username}")
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+        for i, row in enumerate(source_rows, start=1):
+            username = str(row.get("username", "")).strip().lstrip("@")
+            hashtag = str(row.get("hashtag", "")).strip()
+            if not username:
+                continue
+
+            raw_update = row.get("update", 1)
+            should_update = is_update_enabled(raw_update)
+
+            if not should_update:
+                skipped_row = dict(row)
+                skipped_row["username"] = username
+                skipped_row["update"] = 0
+                kol_data.append(skipped_row)
+                print(f"Skipped {i}/{len(source_rows)}: {username} (update=0)")
+                save_progress(kol_data, list(failed_users))
+                continue
+
+            result = await fetch_user_from_web(client, username, hashtag=hashtag)
+
+            merged = dict(row)
+            merged["username"] = username
+            merged["display_name"] = result.get("display_name", username)
+            merged["nickname"] = result.get("nickname", merged.get("nickname", ""))
+            merged["followers"] = result.get("followers", merged.get("followers", 0))
+            # Mark as processed so it will be skipped in the next enrich run
+            merged["update"] = 0
+            kol_data.append(merged)
+
+            if not result.get("_ok", False):
+                failed_users.add(username)
+
+            print(f"Enriched {i}/{len(source_rows)}: {username}")
             save_progress(kol_data, list(failed_users))
-            await asyncio.sleep(random.uniform(1.0, 3.0))
-        except BotDetectedError as e:
-            print(f"Bot detected while enriching {username}: {e}. Stopping.")
-            raise SystemExit("Bot detection triggered during enrich. Exiting.")
-        except Exception as e:
-            print(f"Failed to enrich {username}: {e}")
-            failed_users.add(username)
-            save_progress(kol_data, list(failed_users))
-            await asyncio.sleep(1)
 
     return kol_data, failed_users
 
 
 async def crawl_beauty_kols():
-    all_hashtags = [
-        # "beautyvietnam",
-        # "beautyvn",
-        # "skincarevn",
-        # "kemtrangdiem",
-        # "lamdep",
-        # "HợptáccùngUnilever",
-        # "Hợptáccùng3ce"
-        # "sieudep",
-        "skincarevietnam",
-        # "makeupvietnam",
-        # "cosmeticsvietnam",
-        # "lamdepvietnam",
-        # "sieudepvietnam",
-        # "makeupvn",
-        # "cosmeticsvn",
-        # "vnbeauty",
-        # "beauty",
-        # "makeup",
-        # "skincare",
-        # "cosmetics",
-        # "beautytips",
-        # "hợptáccùngLorealParis",
-        # "ObagimedicalVietnam",
-    ]
-    # Combine global beauty focus + Vietnam tags
-    # all_hashtags = beauty_hashtags + vietnam_hashtags
-    videos_per_hashtag = 20
-
-    # vietnam_only = os.environ.get("VIETNAM_ONLY", "1") in ["1", "true", "True"]
-
     checkpoint = {
         "processed_users": [],
         "pending_users": [],
@@ -353,6 +495,20 @@ async def crawl_beauty_kols():
                 if pd.notna(uid):
                     processed_user_ids.add(str(uid))
         kol_data = old_df.to_dict("records")
+
+    if RUN_MODE == "enrich":
+        if not OUTPUT_FILE.is_file():
+            raise FileNotFoundError(f"{OUTPUT_FILE} not found for enrich mode")
+
+        existing_df = pd.read_excel(OUTPUT_FILE)
+        if existing_df.empty:
+            raise ValueError(f"{OUTPUT_FILE} is empty, cannot enrich")
+
+        kol_data, failed_users = await enrich_users_from_excel(existing_df)
+        print(
+            f"Enrich complete. Total profiles: {len(kol_data)} Failed: {len(failed_users)}"
+        )
+        return
 
     async with TikTokApi() as api:
         print("Starting TikTokApi session initialization...")
@@ -426,20 +582,6 @@ async def crawl_beauty_kols():
 
                 save_user_list(collected_rows)
                 print(f"Saved {len(all_users)} users to {OUTPUT_FILE} (collect mode)")
-                return
-
-            if RUN_MODE == "enrich":
-                if not OUTPUT_FILE.is_file():
-                    raise FileNotFoundError(f"{OUTPUT_FILE} not found for enrich mode")
-
-                existing_df = pd.read_excel(OUTPUT_FILE)
-                if existing_df.empty:
-                    raise ValueError(f"{OUTPUT_FILE} is empty, cannot enrich")
-
-                kol_data, failed_users = await enrich_users_from_excel(api, existing_df)
-                print(
-                    f"Enrich complete. Total profiles: {len(kol_data)} Failed: {len(failed_users)}"
-                )
                 return
 
         finally:
