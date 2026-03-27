@@ -22,3 +22,4 @@ coverage.xml
 .hypothesis
 *.xlsx
 .env
+*.xlsx#

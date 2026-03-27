@@ -40,13 +40,19 @@ all_hashtags = [
     # "skincarevn",
     # "kemtrangdiem",
     # "lamdep",
-    # "HợptáccùngUnilever",
     # "Hợptáccùng3ce"
     # "sieudep",
-    "skincarevietnam",
-    "makeupvietnam",
-    "cosmeticsvietnam",
-    "lamdepvietnam",
+    # "tiplamdep",
+    # "carslan",
+    # "innisfreevietnam",
+    # "KemChốngNắng",
+    # "ChămSócDa",
+    # "makeupvietnam",
+    # "reviewlamdep",
+    # "skincarevietnam",
+    # "cosmeticsvietnam",
+    # "lamdepvietnam",
+    # "HợptáccùngUnilever",
     # "sieudepvietnam",
     # "makeupvn",
     # "cosmeticsvn",
@@ -58,6 +64,14 @@ all_hashtags = [
     # "beautytips",
     # "hợptáccùngLorealParis",
     # "ObagimedicalVietnam",
+    "EsteeLauderVN",
+    "LaneigeVN",
+    "LaRochePosayVN",
+    "Skin1004Vietnam",
+    "DysonBeautyVN",
+    "HợpTácCùngLemonade",
+    "GocLamDep",
+    "SkinCareRoutineVN",
 ]
 
 videos_per_hashtag = 200
@@ -336,28 +350,54 @@ async def build_user_list(
 
 
 def save_progress(kol_data, failed_users):
-    df = pd.DataFrame(kol_data)
-    # remove duplicate usernames in case there are repeats from multiple runs
-    if "username" in df.columns:
-        df = df.drop_duplicates(subset=["username"], keep="first")
+    new_df = pd.DataFrame(kol_data)
+    if "username" in new_df.columns:
+        new_df = new_df.drop_duplicates(subset=["username"], keep="first")
 
-    if "update" not in df.columns:
-        df["update"] = 1
+    # Merge with whatever is currently on disk so rows not yet in kol_data are never lost
+    if OUTPUT_FILE.is_file():
+        try:
+            existing_df = pd.read_excel(OUTPUT_FILE)
+            if (
+                not existing_df.empty
+                and "username" in existing_df.columns
+                and "username" in new_df.columns
+            ):
+                known = set(new_df["username"].dropna().astype(str).str.lstrip("@"))
+                extra = existing_df[
+                    ~existing_df["username"].astype(str).str.lstrip("@").isin(known)
+                ]
+                if not extra.empty:
+                    new_df = pd.concat([new_df, extra], ignore_index=True)
+        except Exception as e:
+            print(f"⚠ Warning: could not read existing {OUTPUT_FILE} for merge: {e}")
 
-    if "hashtag" in df.columns:
+    if "update" not in new_df.columns:
+        new_df["update"] = 1
+
+    if "hashtag" in new_df.columns:
         ordered_columns = ["hashtag", "username", "update"] + [
             column
-            for column in df.columns
+            for column in new_df.columns
             if column not in {"hashtag", "username", "update"}
         ]
-        df = df[ordered_columns]
-    elif "username" in df.columns:
+        new_df = new_df[ordered_columns]
+    elif "username" in new_df.columns:
         ordered_columns = ["username", "update"] + [
-            column for column in df.columns if column not in {"username", "update"}
+            column for column in new_df.columns if column not in {"username", "update"}
         ]
-        df = df[ordered_columns]
+        new_df = new_df[ordered_columns]
 
-    df.to_excel(OUTPUT_FILE, index=False)
+    # Atomic write: write to a temp file first, then replace the real file.
+    # This ensures the original is never left in a half-written/corrupt state.
+    tmp_file = OUTPUT_FILE.with_suffix(".tmp.xlsx")
+    try:
+        new_df.to_excel(tmp_file, index=False)
+        tmp_file.replace(OUTPUT_FILE)
+    except Exception as e:
+        print(f"⚠ Warning: could not save progress to {OUTPUT_FILE}: {e}")
+        if tmp_file.is_file():
+            tmp_file.unlink(missing_ok=True)
 
     save_json(FAILED_FILE, failed_users)
 
@@ -411,10 +451,11 @@ def save_user_list(user_rows):
 
 
 async def enrich_users_from_excel(existing_df):
-    kol_data = []
+    # Pre-populate with ALL rows so an interrupt never loses unprocessed rows
+    kol_data = [dict(row) for row in existing_df.to_dict("records")]
     failed_users = set()
 
-    source_rows = existing_df.to_dict("records")
+    source_rows = kol_data  # same list, updates are in-place by index
     print(f"Enriching {len(source_rows)} users from {OUTPUT_FILE} using web scraping")
 
     headers = {
@@ -436,24 +477,19 @@ async def enrich_users_from_excel(existing_df):
             should_update = is_update_enabled(raw_update)
 
             if not should_update:
-                skipped_row = dict(row)
-                skipped_row["username"] = username
-                skipped_row["update"] = 0
-                kol_data.append(skipped_row)
+                row["username"] = username
                 print(f"Skipped {i}/{len(source_rows)}: {username} (update=0)")
                 save_progress(kol_data, list(failed_users))
                 continue
 
             result = await fetch_user_from_web(client, username, hashtag=hashtag)
 
-            merged = dict(row)
-            merged["username"] = username
-            merged["display_name"] = result.get("display_name", username)
-            merged["nickname"] = result.get("nickname", merged.get("nickname", ""))
-            merged["followers"] = result.get("followers", merged.get("followers", 0))
+            row["username"] = username
+            row["display_name"] = result.get("display_name", username)
+            row["nickname"] = result.get("nickname", row.get("nickname", ""))
+            row["followers"] = result.get("followers", row.get("followers", 0))
             # Mark as processed so it will be skipped in the next enrich run
-            merged["update"] = 0
-            kol_data.append(merged)
+            row["update"] = 0
 
             if not result.get("_ok", False):
                 failed_users.add(username)
@@ -504,10 +540,13 @@ async def crawl_beauty_kols():
         if existing_df.empty:
             raise ValueError(f"{OUTPUT_FILE} is empty, cannot enrich")
 
-        kol_data, failed_users = await enrich_users_from_excel(existing_df)
-        print(
-            f"Enrich complete. Total profiles: {len(kol_data)} Failed: {len(failed_users)}"
-        )
+        try:
+            kol_data, failed_users = await enrich_users_from_excel(existing_df)
+            print(
+                f"Enrich complete. Total profiles: {len(kol_data)} Failed: {len(failed_users)}"
+            )
+        except KeyboardInterrupt:
+            print("\nEnrich interrupted — progress already saved by last checkpoint.")
         return
 
     async with TikTokApi() as api:
