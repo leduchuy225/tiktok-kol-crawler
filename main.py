@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import random
+import re
 from pathlib import Path
 
 import httpx
@@ -64,14 +65,26 @@ all_hashtags = [
     # "beautytips",
     # "hợptáccùngLorealParis",
     # "ObagimedicalVietnam",
-    "EsteeLauderVN",
-    "LaneigeVN",
-    "LaRochePosayVN",
-    "Skin1004Vietnam",
-    "DysonBeautyVN",
-    "HợpTácCùngLemonade",
-    "GocLamDep",
-    "SkinCareRoutineVN",
+    # "EsteeLauderVN",
+    # "LaneigeVN",
+    # "LaRochePosayVN",
+    # "Skin1004Vietnam",
+    # "DysonBeautyVN",
+    # "HợpTácCùngLemonade",
+    # "GocLamDep",
+    # "SkinCareRoutineVN",
+    # "CeraVeVN",
+    "VichyVietnam",
+    "EucerinVN",
+    "BiodermaVietnam",
+    "PaulaChoiceVN",
+    "TheOrdinaryVietnam",
+    "CocoonVietnam",
+    "skincarekhoahoc",
+    "hoatchatduongda",
+    "reviewkemchongnang",
+    "phuchoida",
+    "nghienskincare",
 ]
 
 videos_per_hashtag = 200
@@ -132,6 +145,38 @@ def load_json(path):
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def extract_gmail(text):
+    if text is None:
+        return ""
+    match = re.search(
+        r"([a-zA-Z0-9._%+\-]+@gmail\.com)", str(text), flags=re.IGNORECASE
+    )
+    return match.group(1).lower() if match else ""
+
+
+def extract_ig_handle(text):
+    if text is None:
+        return ""
+
+    value = str(text).replace("\n", " ")
+    patterns = [
+        # Handles: ig: name, ig for work: name, ig for collab: name, etc.
+        r"\b(?:ig|insta|instagram)\b(?:\s+for\s+[a-zA-Z0-9_&/+\-. ]{1,40})?\s*[:\-|]\s*@?([a-zA-Z0-9._]{1,30})\b",
+        # Handles: ig @name, instagram @name, insta for booking @name
+        r"\b(?:ig|insta|instagram)\b(?:\s+for\s+[a-zA-Z0-9_&/+\-. ]{1,40})?\s+@([a-zA-Z0-9._]{1,30})\b",
+        r"(?:instagram\.com/|instagr\.am/)@?([a-zA-Z0-9._]{1,30})\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.IGNORECASE)
+        if match:
+            handle = match.group(1).strip("._").lower()
+            if handle and not handle.endswith("gmail"):
+                return handle
+
+    return ""
 
 
 def is_update_enabled(raw_value):
@@ -239,12 +284,32 @@ async def fetch_user_from_web(client, username, hashtag="", retries=3):
             if not user:
                 raise Exception("user payload missing")
 
+            bio = user.get("signature", "")
+            gmail = extract_gmail(bio)
+            ig = extract_ig_handle(bio)
+
             return {
                 "hashtag": hashtag,
                 "username": username,
-                "display_name": user.get("uniqueId", username),
+                "display_name": user.get("nickname", "")
+                or user.get("uniqueId", username),
                 "nickname": user.get("nickname", ""),
                 "followers": stats.get("followerCount", 0),
+                "following": stats.get("followingCount", 0),
+                "likes": stats.get("heartCount", 0),
+                "videos": stats.get("videoCount", 0),
+                "friends": stats.get("friendCount", 0),
+                "bio": bio,
+                "gmail": gmail,
+                "ig": ig,
+                "verified": user.get("verified", False),
+                "private_account": user.get("privateAccount", False),
+                "sec_uid": user.get("secUid", ""),
+                "user_id": str(user.get("id", "")),
+                "avatar_url": user.get("avatarLarger", "")
+                or user.get("avatarMedium", "")
+                or user.get("avatarThumb", ""),
+                "region": user.get("region", "") or user.get("country", ""),
                 "_ok": True,
             }
         except Exception as e:
@@ -256,24 +321,22 @@ async def fetch_user_from_web(client, username, hashtag="", retries=3):
                     "display_name": username,
                     "nickname": "",
                     "followers": 0,
+                    "following": 0,
+                    "likes": 0,
+                    "videos": 0,
+                    "friends": 0,
+                    "bio": "",
+                    "gmail": "",
+                    "ig": "",
+                    "verified": False,
+                    "private_account": False,
+                    "sec_uid": "",
+                    "user_id": "",
+                    "avatar_url": "",
+                    "region": "",
                     "_ok": False,
                 }
             await asyncio.sleep(2 + attempt)
-        except Exception as e:
-            bot_msg = (
-                " (possible bot detect; try HEADLESS=0, browser=webkit, or PROXY_URL)"
-                if "unexpected status code" in str(e).lower()
-                or "empty" in str(e).lower()
-                else ""
-            )
-            if bot_msg:
-                raise BotDetectedError(
-                    f"[{username}] attempt {attempt+1} failed: {e}{bot_msg}"
-                )
-            print(f"[{username}] attempt {attempt+1} failed: {e}{bot_msg}")
-            if attempt == retries - 1:
-                raise
-            await backoff_sleep(attempt)
 
 
 async def build_user_list(
@@ -485,9 +548,26 @@ async def enrich_users_from_excel(existing_df):
             result = await fetch_user_from_web(client, username, hashtag=hashtag)
 
             row["username"] = username
-            row["display_name"] = result.get("display_name", username)
-            row["nickname"] = result.get("nickname", row.get("nickname", ""))
+            row["display_name"] = result.get("display_name") or row.get(
+                "display_name", username
+            )
+            row["nickname"] = result.get("nickname") or row.get("nickname", "")
             row["followers"] = result.get("followers", row.get("followers", 0))
+            row["following"] = result.get("following", row.get("following", 0))
+            row["likes"] = result.get("likes", row.get("likes", 0))
+            row["videos"] = result.get("videos", row.get("videos", 0))
+            row["friends"] = result.get("friends", row.get("friends", 0))
+            row["bio"] = result.get("bio") or row.get("bio", "")
+            row["gmail"] = result.get("gmail") or row.get("gmail", "")
+            row["ig"] = result.get("ig") or row.get("ig", "")
+            row["verified"] = result.get("verified", row.get("verified", False))
+            row["private_account"] = result.get(
+                "private_account", row.get("private_account", False)
+            )
+            row["sec_uid"] = result.get("sec_uid") or row.get("sec_uid", "")
+            row["user_id"] = result.get("user_id") or row.get("user_id", "")
+            row["avatar_url"] = result.get("avatar_url") or row.get("avatar_url", "")
+            row["region"] = result.get("region") or row.get("region", "")
             # Mark as processed so it will be skipped in the next enrich run
             row["update"] = 0
 
