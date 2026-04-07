@@ -85,7 +85,19 @@ all_hashtags = [
     # "reviewkemchongnang",
     # "phuchoida",
     # "nghienskincare",
-    "dưỡngda"
+    # "dưỡngda",
+    # "skincaretipsvietnam",
+    # "duongtrangda",
+    # "chiasekinhnghiemlamdep",
+    "chonglaohoa",
+    "trimunvietnam",
+    "danhaycam",
+    "nghiendapmatna",
+    "tipsduongda",
+    "skincaremoingay",
+    "routinevn",
+    "duongtrangantoan",
+    "trimunthammong",
 ]
 
 videos_per_hashtag = 200
@@ -599,6 +611,9 @@ async def enrich_users_from_excel(existing_df):
     failed_users = set()
 
     source_rows = kol_data  # same list, updates are in-place by index
+    skip_save_interval = 100
+    skipped_since_last_save = 0
+    has_unsaved_changes = False
     print(f"Enriching {len(source_rows)} users from {OUTPUT_FILE} using web scraping")
 
     headers = {
@@ -622,7 +637,12 @@ async def enrich_users_from_excel(existing_df):
             if not should_update:
                 row["username"] = username
                 print(f"Skipped {i}/{len(source_rows)}: {username} (update=0)")
-                save_progress(kol_data, list(failed_users))
+                skipped_since_last_save += 1
+                has_unsaved_changes = True
+                if skipped_since_last_save >= skip_save_interval:
+                    save_progress(kol_data, list(failed_users))
+                    skipped_since_last_save = 0
+                    has_unsaved_changes = False
                 continue
 
             result = await fetch_user_from_web(client, username, hashtag=hashtag)
@@ -657,6 +677,11 @@ async def enrich_users_from_excel(existing_df):
 
             print(f"Enriched {i}/{len(source_rows)}: {username}")
             save_progress(kol_data, list(failed_users))
+            skipped_since_last_save = 0
+            has_unsaved_changes = False
+
+    if has_unsaved_changes:
+        save_progress(kol_data, list(failed_users))
 
     return kol_data, failed_users
 
