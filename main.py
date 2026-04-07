@@ -74,33 +74,41 @@ all_hashtags = [
     # "GocLamDep",
     # "SkinCareRoutineVN",
     # "CeraVeVN",
-    "VichyVietnam",
-    "EucerinVN",
-    "BiodermaVietnam",
-    "PaulaChoiceVN",
-    "TheOrdinaryVietnam",
-    "CocoonVietnam",
-    "skincarekhoahoc",
-    "hoatchatduongda",
-    "reviewkemchongnang",
-    "phuchoida",
-    "nghienskincare",
+    # "VichyVietnam",
+    # "EucerinVN",
+    # "BiodermaVietnam",
+    # "PaulaChoiceVN",
+    # "TheOrdinaryVietnam",
+    # "CocoonVietnam",
+    # "skincarekhoahoc",
+    # "hoatchatduongda",
+    # "reviewkemchongnang",
+    # "phuchoida",
+    # "nghienskincare",
+    "dưỡngda"
 ]
 
 videos_per_hashtag = 200
 
 
-def get_cli_mode():
+def get_cli_options():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--mode", "-mode", "-m", dest="mode", type=str)
+    parser.add_argument(
+        "--retry-failed",
+        dest="retry_failed",
+        action="store_true",
+        help="In enrich mode, set update=1 for usernames in failed_users.json before enriching",
+    )
     args, _ = parser.parse_known_args()
-    return args.mode
+    return args
 
 
-cli_mode = get_cli_mode()
+cli_options = get_cli_options()
 RUN_MODE = (
-    cli_mode or os.environ.get("RUN_MODE", "collect")
+    cli_options.mode or os.environ.get("RUN_MODE", "collect")
 ).lower()  # collect | enrich
+RETRY_FAILED = cli_options.retry_failed
 
 if RUN_MODE not in {"collect", "enrich"}:
     raise ValueError("RUN_MODE must be 'collect' or 'enrich'.")
@@ -156,6 +164,26 @@ def extract_gmail(text):
     return match.group(1).lower() if match else ""
 
 
+def extract_phone(text):
+    if text is None:
+        return ""
+
+    value = str(text).replace("\n", " ")
+    # Match Vietnamese and international formats:
+    # +84xxxxxxxxx, 0xxxxxxxxx, +1-xxx-xxx-xxxx, separated by spaces/dashes/dots
+    # Must be 7–15 digits total; avoid matching pure years or IDs
+    match = re.search(
+        r"(?<![\d])(?:\+?\d{1,3}[\s.\-]?)?(?:\(?\d{2,4}\)?[\s.\-]?){2,4}\d{3,4}(?![\d])",
+        value,
+    )
+    if match:
+        raw = match.group(0).strip()
+        digits = re.sub(r"[^\d+]", "", raw)  # keep only digits and leading +
+        if 7 <= len(digits.lstrip("+")) <= 15:
+            return raw.strip()
+    return ""
+
+
 def extract_ig_handle(text):
     if text is None:
         return ""
@@ -177,6 +205,55 @@ def extract_ig_handle(text):
                 return handle
 
     return ""
+
+
+def mark_failed_users_for_retry(existing_df):
+    if existing_df.empty or "username" not in existing_df.columns:
+        return existing_df, 0, set()
+
+    failed_list = load_json(FAILED_FILE)
+    failed_users = {
+        str(item).strip().lstrip("@") for item in failed_list if str(item).strip()
+    }
+    if not failed_users:
+        return existing_df, 0, set()
+
+    df = existing_df.copy()
+    if "update" not in df.columns:
+        df["update"] = 1
+
+    username_norm = df["username"].astype(str).str.strip().str.lstrip("@")
+    retry_mask = username_norm.isin(failed_users)
+    retry_count = int(retry_mask.sum())
+    retry_usernames = set(username_norm[retry_mask].tolist())
+    if retry_count > 0:
+        df.loc[retry_mask, "update"] = 1
+
+    return df, retry_count, retry_usernames
+
+
+def remove_users_from_output(usernames):
+    if not usernames or not OUTPUT_FILE.is_file():
+        return 0
+
+    df = pd.read_excel(OUTPUT_FILE)
+    if df.empty or "username" not in df.columns:
+        return 0
+
+    normalized_usernames = {
+        str(username).strip().lstrip("@")
+        for username in usernames
+        if str(username).strip()
+    }
+    username_norm = df["username"].astype(str).str.strip().str.lstrip("@")
+    keep_mask = ~username_norm.isin(normalized_usernames)
+    removed_count = int((~keep_mask).sum())
+
+    if removed_count > 0:
+        filtered = df[keep_mask].copy()
+        filtered.to_excel(OUTPUT_FILE, index=False)
+
+    return removed_count
 
 
 def is_update_enabled(raw_value):
@@ -287,6 +364,7 @@ async def fetch_user_from_web(client, username, hashtag="", retries=3):
             bio = user.get("signature", "")
             gmail = extract_gmail(bio)
             ig = extract_ig_handle(bio)
+            phone = extract_phone(bio)
 
             return {
                 "hashtag": hashtag,
@@ -302,6 +380,7 @@ async def fetch_user_from_web(client, username, hashtag="", retries=3):
                 "bio": bio,
                 "gmail": gmail,
                 "ig": ig,
+                "phone": phone,
                 "verified": user.get("verified", False),
                 "private_account": user.get("privateAccount", False),
                 "sec_uid": user.get("secUid", ""),
@@ -328,6 +407,7 @@ async def fetch_user_from_web(client, username, hashtag="", retries=3):
                     "bio": "",
                     "gmail": "",
                     "ig": "",
+                    "phone": "",
                     "verified": False,
                     "private_account": False,
                     "sec_uid": "",
@@ -560,6 +640,7 @@ async def enrich_users_from_excel(existing_df):
             row["bio"] = result.get("bio") or row.get("bio", "")
             row["gmail"] = result.get("gmail") or row.get("gmail", "")
             row["ig"] = result.get("ig") or row.get("ig", "")
+            row["phone"] = result.get("phone") or row.get("phone", "")
             row["verified"] = result.get("verified", row.get("verified", False))
             row["private_account"] = result.get(
                 "private_account", row.get("private_account", False)
@@ -620,8 +701,39 @@ async def crawl_beauty_kols():
         if existing_df.empty:
             raise ValueError(f"{OUTPUT_FILE} is empty, cannot enrich")
 
+        retry_usernames = set()
+        if RETRY_FAILED:
+            existing_df, retry_count, retry_usernames = mark_failed_users_for_retry(
+                existing_df
+            )
+            if retry_count > 0:
+                save_user_list(existing_df.to_dict("records"))
+                print(
+                    f"Marked {retry_count} users from {FAILED_FILE} with update=1 for retry"
+                )
+            else:
+                print(f"No users found in {FAILED_FILE} to retry")
+
         try:
             kol_data, failed_users = await enrich_users_from_excel(existing_df)
+
+            if RETRY_FAILED and retry_usernames:
+                failed_retry_users = {
+                    str(username).strip().lstrip("@")
+                    for username in failed_users
+                    if str(username).strip().lstrip("@") in retry_usernames
+                }
+                removed_count = remove_users_from_output(failed_retry_users)
+                if removed_count > 0:
+                    print(
+                        f"Removed {removed_count} retried users that still failed from {OUTPUT_FILE}"
+                    )
+
+                # Clear failed_users.json — retried users that keep failing were removed above;
+                # any remaining failures will be written fresh by save_progress.
+                save_json(FAILED_FILE, [])
+                print(f"Cleared {FAILED_FILE}")
+
             print(
                 f"Enrich complete. Total profiles: {len(kol_data)} Failed: {len(failed_users)}"
             )
