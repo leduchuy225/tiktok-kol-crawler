@@ -89,15 +89,26 @@ all_hashtags = [
     # "skincaretipsvietnam",
     # "duongtrangda",
     # "chiasekinhnghiemlamdep",
-    "chonglaohoa",
-    "trimunvietnam",
-    "danhaycam",
-    "nghiendapmatna",
-    "tipsduongda",
-    "skincaremoingay",
-    "routinevn",
-    "duongtrangantoan",
-    "trimunthammong",
+    # "chonglaohoa",
+    # "trimunvietnam",
+    # "danhaycam",
+    # "nghiendapmatna",
+    # "tipsduongda",
+    # "skincaremoingay",
+    # "routinevn",
+    # "duongtrangantoan",
+    # "trimunthammong",
+    "kiehlsvietnam",
+    "larocheposayvn",
+    "vichyvietnam",
+    "biodermavietnam",
+    "paulaschoicevn",
+    "obagivietnam",
+    "laneigevn",
+    "innisfreevietnam",
+    "cocoonvietnam",
+    "skinceuticalsvn",
+    # "24HCanDaStress",
 ]
 
 videos_per_hashtag = 200
@@ -122,8 +133,8 @@ RUN_MODE = (
 ).lower()  # collect | enrich
 RETRY_FAILED = cli_options.retry_failed
 
-if RUN_MODE not in {"collect", "enrich"}:
-    raise ValueError("RUN_MODE must be 'collect' or 'enrich'.")
+if RUN_MODE not in {"collect", "enrich", "popular"}:
+    raise ValueError("RUN_MODE must be 'collect', 'enrich', or 'popular'.")
 
 if RUN_MODE == "collect" and not ms_token:
     raise ValueError(
@@ -217,6 +228,39 @@ def extract_ig_handle(text):
                 return handle
 
     return ""
+
+
+def extract_video_hashtags(text):
+    if not text:
+        return ""
+
+    tags = []
+    for match in re.findall(r"#([A-Za-z0-9_]+)", str(text)):
+        tag = f"#{match.strip()}"
+        if tag not in tags:
+            tags.append(tag)
+
+    return ",".join(tags)
+
+
+def extract_year_from_timestamp(create_time):
+    """Extract year from create_time (Unix timestamp or string)."""
+    if not create_time:
+        return ""
+
+    try:
+        # Try to convert to int (Unix timestamp)
+        timestamp = int(create_time)
+        from datetime import datetime
+
+        dt = datetime.fromtimestamp(timestamp)
+        return str(dt.year)
+    except (ValueError, TypeError):
+        # Try to parse as string with year
+        import re as re_module
+
+        match = re_module.search(r"(\d{4})", str(create_time))
+        return match.group(1) if match else ""
 
 
 def mark_failed_users_for_retry(existing_df):
@@ -686,6 +730,183 @@ async def enrich_users_from_excel(existing_df):
     return kol_data, failed_users
 
 
+async def fetch_popular_videos(api, usernames, existing_df, videos_per_user=30):
+    """Fetch videos from specific users and extract popular video data.
+    If sec_uid is missing, enrich the user first.
+    """
+    videos_data = []
+    seen_videos = set()
+    output_file = Path("popular_videos_2026.xlsx")
+
+    # Load existing videos from file to append
+    if output_file.is_file():
+        try:
+            existing_df_videos = pd.read_excel(output_file)
+            videos_data = existing_df_videos.to_dict("records")
+            seen_videos = {v["video_id"] for v in videos_data if "video_id" in v}
+        except Exception as e:
+            print(f"⚠ Warning: could not load existing videos from {output_file}: {e}")
+            videos_data = []
+
+    # Create user lookup from existing_df
+    user_rows = {}
+    for row in existing_df.to_dict("records"):
+        username = str(row.get("username", "")).strip().lstrip("@")
+        if username:
+            user_rows[username] = row
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+        for username in usernames:
+            print(f"Fetching videos for @{username}")
+            row = user_rows.get(username, {})
+            sec_uid = str(row.get("sec_uid", "")).strip()
+            private_account = row.get("private_account")
+
+            # If sec_uid or private_account missing, enrich the user first
+            if (
+                not sec_uid
+                or private_account is None
+                or (isinstance(private_account, float) and pd.isna(private_account))
+            ):
+                print(
+                    f"  sec_uid or private_account missing for @{username}, enriching..."
+                )
+                try:
+                    enriched = await fetch_user_from_web(
+                        client, username, hashtag=row.get("hashtag", "")
+                    )
+                    if enriched.get("_ok"):
+                        sec_uid = enriched.get("sec_uid", "")
+                        private_account = enriched.get("private_account", False)
+                        # Update row with enriched data
+                        row.update(enriched)
+                    else:
+                        print(f"  Enrich failed for @{username}, skipping videos")
+                        continue
+                except Exception as e:
+                    print(f"  Enrich error for @{username}: {e}, skipping")
+                    continue
+
+            # Check if user is private or doesn't exist
+            if not sec_uid:
+                print(f"  No sec_uid found for @{username}, skipping videos")
+                continue
+            if private_account:
+                print(f"  @{username} has private account, skipping videos")
+                continue
+
+            # Check if user is private or doesn't exist
+            if not sec_uid:
+                print(f"  No sec_uid found for @{username}, skipping videos")
+                continue
+            if row.get("private_account"):
+                print(f"  @{username} has private account, skipping videos")
+                continue
+
+            try:
+                # Create user with sec_uid to avoid extra info() call
+                user = api.user(username=username, sec_uid=sec_uid)
+                async for video in user.videos(count=videos_per_user):
+                    if video.id in seen_videos:
+                        continue
+                    seen_videos.add(video.id)
+
+                    video_dict = video.as_dict
+
+                    # Get data as dict
+                    description = video_dict.get(
+                        "desc", video_dict.get("description", "")
+                    )
+                    author_nickname = video_dict.get("author", {}).get("nickname", "")
+                    music_title = video_dict.get("music", {}).get("title", "")
+                    duration = video_dict.get("duration", 0)
+
+                    # Get as video
+                    author_username = (
+                        getattr(video.author, "uniqueId", username)
+                        if video.author
+                        else username
+                    )
+                    create_time = getattr(
+                        video, "create_time", getattr(video, "createTime", "")
+                    )
+
+                    video_info = {
+                        "username": author_username,
+                        "video_id": getattr(video, "id", ""),
+                        "nickname": author_nickname,
+                        "views": getattr(video, "stats", {}).get("playCount", 0),
+                        "likes": getattr(video, "stats", {}).get("diggCount", 0),
+                        "comments": getattr(video, "stats", {}).get("commentCount", 0),
+                        "shares": getattr(video, "stats", {}).get("shareCount", 0),
+                        "description": description,
+                        "hashtags": extract_video_hashtags(description),
+                        "create_time": create_time,
+                        "year": extract_year_from_timestamp(create_time),
+                        "music_title": music_title,
+                        "duration": duration,
+                        "video_url": f"https://www.tiktok.com/@{author_username}/video/{getattr(video, 'id', '')}",
+                    }
+                    videos_data.append(video_info)
+
+                    await asyncio.sleep(random.uniform(0.5, 1.5))  # Slow down
+            except Exception as e:
+                print(f"Error fetching videos for @{username}: {e}")
+                continue
+
+            # Set update=0 for this user in the main Excel
+            existing_df.loc[
+                existing_df["username"].str.strip().str.lstrip("@") == username,
+                "update",
+            ] = 0
+            existing_df.to_excel(OUTPUT_FILE, index=False)
+            print(f"Set update=0 for @{username} in {OUTPUT_FILE}")
+
+            # Sort by popularity (views descending) and save after each user
+            videos_data.sort(key=lambda x: x["views"], reverse=True)
+            df = pd.DataFrame(videos_data)
+            df.to_excel(output_file, index=False)
+            print(
+                f"Saved {len(videos_data)} popular videos to {output_file} after processing @{username}"
+            )
+
+    return videos_data
+
+
+def save_popular_videos(videos_data):
+    """Save popular videos to Excel."""
+    df = pd.DataFrame(videos_data)
+    output_file = Path("popular_videos_2026.xlsx")
+    df.to_excel(output_file, index=False)
+    print(f"Saved {len(videos_data)} popular videos to {output_file}")
+
+
+def load_processed_popular_usernames(path):
+    if not path.is_file():
+        return set()
+
+    try:
+        df = pd.read_excel(path, usecols=["username"])
+    except Exception as e:
+        print(
+            f"⚠ Warning: could not read {path} for already-processed popular users: {e}"
+        )
+        return set()
+
+    if "username" not in df.columns:
+        return set()
+
+    return {str(u).strip().lstrip("@") for u in df["username"].dropna()}
+
+
 async def crawl_beauty_kols():
     checkpoint = {
         "processed_users": [],
@@ -857,6 +1078,55 @@ async def crawl_beauty_kols():
 
                 save_user_list(collected_rows)
                 print(f"Saved {len(all_users)} users to {OUTPUT_FILE} (collect mode)")
+                return
+
+            if RUN_MODE == "popular":
+                if not OUTPUT_FILE.is_file():
+                    raise FileNotFoundError(f"{OUTPUT_FILE} not found for popular mode")
+
+                existing_df = pd.read_excel(OUTPUT_FILE)
+                if existing_df.empty:
+                    raise ValueError(
+                        f"{OUTPUT_FILE} is empty, cannot find popular videos"
+                    )
+
+                # Filter users with update=1
+                users_to_process = []
+                for row in existing_df.to_dict("records"):
+                    username = str(row.get("username", "")).strip().lstrip("@")
+                    if username and is_update_enabled(row.get("update", 0)):
+                        users_to_process.append(username)
+
+                if not users_to_process:
+                    print("No users with update=1 found for popular mode")
+                    return
+
+                popular_file = Path("popular_videos_2026.xlsx")
+                processed_users = load_processed_popular_usernames(popular_file)
+                if processed_users:
+                    before_count = len(users_to_process)
+                    users_to_process = [
+                        username
+                        for username in users_to_process
+                        if username not in processed_users
+                    ]
+                    skipped = before_count - len(users_to_process)
+                    if skipped > 0:
+                        print(
+                            f"Skipping {skipped} user(s) already present in {popular_file}"
+                        )
+
+                if not users_to_process:
+                    print(
+                        "All update=1 users already have videos in popular_videos_2026.xlsx. Nothing to process."
+                    )
+                    return
+
+                print(f"Processing {len(users_to_process)} users for popular videos")
+                popular_videos = await fetch_popular_videos(
+                    api, users_to_process, existing_df
+                )
+                print(f"Total fetched {len(popular_videos)} popular videos")
                 return
 
         finally:

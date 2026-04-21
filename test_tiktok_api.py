@@ -34,12 +34,27 @@ async def user_example():
             browser=os.getenv("TIKTOK_BROWSER", "chromium"),
         )
         user = api.user("justbeminnie")
-        user_data = await user.info()
-        print(json.dumps(user_data))
+        # user_data = await user.info()
+        # print(json.dumps(user_data))
 
-        # async for video in user.videos(count=30):
-        #     print(video)
-        #     print(video.as_dict)
+        async for video in user.videos(count=1):
+            description1 = getattr(video, "desc", getattr(video, "description", ""))
+            print(f"Video description 1: {description1}")
+
+            print(f"Video hashtags: {video.hashtags}")
+            print(f"Video stats: {video.stats}")
+
+            video.create_time
+
+            video.as_dict
+
+            description2 = video.as_dict.get(
+                "desc", video.as_dict.get("description", "")
+            )
+            print(f"Video description 2: {description2}")
+
+            print(json.dumps(video.as_dict))
+            break
 
         # async for playlist in user.playlists():
         #     print(playlist)
@@ -47,4 +62,4 @@ async def user_example():
 
 if __name__ == "__main__":
     # asyncio.run(get_hashtag_videos())
-    asyncio.run(get_hashtag_videos())
+    asyncio.run(user_example())
