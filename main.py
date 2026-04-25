@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from TikTokApi import TikTokApi
 import pandas as pd
+from playwright.async_api import async_playwright
 
 # Auto-load .env file if present
 load_dotenv()
@@ -98,17 +99,31 @@ all_hashtags = [
     # "routinevn",
     # "duongtrangantoan",
     # "trimunthammong",
-    "kiehlsvietnam",
-    "larocheposayvn",
-    "vichyvietnam",
-    "biodermavietnam",
-    "paulaschoicevn",
-    "obagivietnam",
-    "laneigevn",
-    "innisfreevietnam",
-    "cocoonvietnam",
-    "skinceuticalsvn",
+    # "kiehlsvietnam",
+    # "larocheposayvn",
+    # "vichyvietnam",
+    # "biodermavietnam",
+    # "paulaschoicevn",
+    # "obagivietnam",
+    # "laneigevn",
+    # "innisfreevietnam",
+    # "cocoonvietnam",
+    # "skinceuticalsvn",
     # "24HCanDaStress",
+    # "HợptáccùngLOrealParis",
+    # "HợptáccùngMaybelline",
+    # "SimpleVietnam",
+    "sulwhasoovietnam",
+    "CùngVichyPhụcHồiDa",
+    "Dermalogicavietnam",
+    "HoptaccungUsolab",
+    "TrinhPhamReview",
+    "Lemon8BeautyVN",
+    "TikTokBeautyVN",
+    "GlowSkinVN",
+    "phuchoidasautreatment",
+    "HannahOlala",
+    "ExosomeVietnam",
 ]
 
 videos_per_hashtag = 200
@@ -390,63 +405,82 @@ async def fetch_user_from_web(client, username, hashtag="", retries=3):
     url = f"https://www.tiktok.com/@{username}"
     for attempt in range(retries):
         try:
-            await asyncio.sleep(random.uniform(1.2, 2.8))
-            response = await client.get(url, timeout=20.0)
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
 
-            if response.status_code == 429:
-                print(f"[{username}] got 429 rate limit, retrying...")
-                await asyncio.sleep(5 + attempt * 2)
-                continue
+                # Set a realistic User-Agent to avoid immediate blocks
+                await page.set_extra_http_headers(
+                    {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+                    }
+                )
 
-            if response.status_code != 200:
-                raise Exception(f"HTTP {response.status_code}")
+                print(f"Navigating to {url}...")
+                await page.goto(url, wait_until="networkidle")
 
-            soup = BeautifulSoup(response.text, "html.parser")
-            script = soup.find("script", id="__UNIVERSAL_DATA_FOR_REHYDRATION__")
-            if not script or not script.string:
-                raise Exception("missing rehydration data")
+                # Give the page a moment to settle
+                # await asyncio.sleep(5)
 
-            data = json.loads(script.string)
-            user_info = (
-                data.get("__DEFAULT_SCOPE__", {})
-                .get("webapp.user-detail", {})
-                .get("userInfo", {})
-            )
-            user = user_info.get("user", {})
-            stats = user_info.get("stats", {})
-            if not user:
-                raise Exception("user payload missing")
+                await asyncio.sleep(random.uniform(1.2, 2.8))
+                # response = await client.get(url, timeout=20.0)
 
-            bio = user.get("signature", "")
-            gmail = extract_gmail(bio)
-            ig = extract_ig_handle(bio)
-            phone = extract_phone(bio)
+                # if response.status_code == 429:
+                #     print(f"[{username}] got 429 rate limit, retrying...")
+                #     await asyncio.sleep(5 + attempt * 2)
+                #     continue
 
-            return {
-                "hashtag": hashtag,
-                "username": username,
-                "display_name": user.get("nickname", "")
-                or user.get("uniqueId", username),
-                "nickname": user.get("nickname", ""),
-                "followers": stats.get("followerCount", 0),
-                "following": stats.get("followingCount", 0),
-                "likes": stats.get("heartCount", 0),
-                "videos": stats.get("videoCount", 0),
-                "friends": stats.get("friendCount", 0),
-                "bio": bio,
-                "gmail": gmail,
-                "ig": ig,
-                "phone": phone,
-                "verified": user.get("verified", False),
-                "private_account": user.get("privateAccount", False),
-                "sec_uid": user.get("secUid", ""),
-                "user_id": str(user.get("id", "")),
-                "avatar_url": user.get("avatarLarger", "")
-                or user.get("avatarMedium", "")
-                or user.get("avatarThumb", ""),
-                "region": user.get("region", "") or user.get("country", ""),
-                "_ok": True,
-            }
+                # if response.status_code != 200:
+                #     raise Exception(f"HTTP {response.status_code}")
+                content = await page.content()
+                soup = BeautifulSoup(content, "html.parser")
+
+                # soup = BeautifulSoup(response.text, "html.parser")
+                script = soup.find("script", id="__UNIVERSAL_DATA_FOR_REHYDRATION__")
+                if not script or not script.string:
+                    raise Exception("missing rehydration data")
+
+                data = json.loads(script.string)
+                user_info = (
+                    data.get("__DEFAULT_SCOPE__", {})
+                    .get("webapp.user-detail", {})
+                    .get("userInfo", {})
+                )
+                user = user_info.get("user", {})
+                stats = user_info.get("stats", {})
+                if not user:
+                    raise Exception("user payload missing")
+
+                bio = user.get("signature", "")
+                gmail = extract_gmail(bio)
+                ig = extract_ig_handle(bio)
+                phone = extract_phone(bio)
+
+                return {
+                    "hashtag": hashtag,
+                    "username": username,
+                    "display_name": user.get("nickname", "")
+                    or user.get("uniqueId", username),
+                    "nickname": user.get("nickname", ""),
+                    "followers": stats.get("followerCount", 0),
+                    "following": stats.get("followingCount", 0),
+                    "likes": stats.get("heartCount", 0),
+                    "videos": stats.get("videoCount", 0),
+                    "friends": stats.get("friendCount", 0),
+                    "bio": bio,
+                    "gmail": gmail,
+                    "ig": ig,
+                    "phone": phone,
+                    "verified": user.get("verified", False),
+                    "private_account": user.get("privateAccount", False),
+                    "sec_uid": user.get("secUid", ""),
+                    "user_id": str(user.get("id", "")),
+                    "avatar_url": user.get("avatarLarger", "")
+                    or user.get("avatarMedium", "")
+                    or user.get("avatarThumb", ""),
+                    "region": user.get("region", "") or user.get("country", ""),
+                    "_ok": True,
+                }
         except Exception as e:
             if attempt == retries - 1:
                 print(f"[{username}] web enrich failed: {e}")
